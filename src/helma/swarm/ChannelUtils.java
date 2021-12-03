@@ -19,8 +19,8 @@ import org.jgroups.*;
 import org.jgroups.blocks.PullPushAdapter;
 import org.w3c.dom.*;
 import helma.framework.core.Application;
-import helma.framework.repository.Repository;
-import helma.framework.repository.Resource;
+import helma.framework.repository.RepositoryInterface;
+import helma.framework.repository.ResourceInterface;
 import helma.framework.repository.FileResource;
 
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -104,7 +104,7 @@ class SwarmConfig {
     public SwarmConfig (Application app) {
         DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
 
-        Resource res = null;
+        ResourceInterface res = null;
 
         String conf = app.getProperty("swarm.conf");
 
@@ -113,7 +113,7 @@ class SwarmConfig {
         } else {
             Iterator reps = app.getRepositories().iterator();
             while (reps.hasNext()) {
-                Repository rep = (Repository) reps.next();
+                RepositoryInterface rep = (RepositoryInterface) reps.next();
                 res = rep.getResource("swarm.conf");
                 if (res != null)
                     break;

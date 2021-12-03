@@ -15,7 +15,7 @@
  */
 package helma.swarm;
 
-import helma.objectmodel.db.IDGenerator;
+import helma.objectmodel.db.IDGeneratorInterface;
 import helma.objectmodel.db.DbMapping;
 import helma.objectmodel.db.NodeManager;
 import helma.framework.core.Application;
@@ -26,7 +26,7 @@ import org.jgroups.blocks.PullPushAdapter;
 import org.jgroups.*;
 import org.apache.commons.logging.Log;
 
-public class SwarmIDGenerator implements IDGenerator, MembershipListener,
+public class SwarmIDGenerator implements IDGeneratorInterface, MembershipListener,
                                          RequestHandler {
 
     Application app;

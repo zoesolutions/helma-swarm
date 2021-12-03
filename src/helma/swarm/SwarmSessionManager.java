@@ -27,9 +27,9 @@ import helma.framework.core.SessionManager;
 import helma.framework.core.Application;
 import helma.framework.core.Session;
 import helma.framework.core.RequestEvaluator;
-import helma.scripting.ScriptingEngine;
+import helma.scripting.ScriptingEngineInterface;
 import helma.objectmodel.db.NodeHandle;
-import helma.objectmodel.INode;
+import helma.objectmodel.NodeInterface;
 
 public class SwarmSessionManager extends SessionManager
                                  implements MessageListener, Runnable {
@@ -168,7 +168,7 @@ public class SwarmSessionManager extends SessionManager
                 session.setUID(update.uid);
                 if (update.cacheNode != null) {
                     Object cacheNode = bytesToObject(update.cacheNode);
-                    session.setCacheNode((INode) cacheNode);
+                    session.setCacheNode((NodeInterface) cacheNode);
                 }
                 if (debug) {
                     log.debug("Received session update: " + session);
@@ -270,7 +270,7 @@ public class SwarmSessionManager extends SessionManager
 
     static byte[] objectToBytes(Object obj, RequestEvaluator reval)
             throws IOException {
-        ScriptingEngine engine = reval.getScriptingEngine();
+        ScriptingEngineInterface engine = reval.getScriptingEngine();
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         engine.serialize(obj, out);
         return out.toByteArray();
@@ -280,7 +280,7 @@ public class SwarmSessionManager extends SessionManager
             throws IOException, ClassNotFoundException {
         RequestEvaluator reval = app.getEvaluator();
         try {
-            ScriptingEngine engine = reval.getScriptingEngine();
+            ScriptingEngineInterface engine = reval.getScriptingEngine();
             ByteArrayInputStream in = new ByteArrayInputStream(bytes);
             return engine.deserialize(in);
         } finally {

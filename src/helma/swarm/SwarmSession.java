@@ -20,7 +20,7 @@ import helma.framework.core.Session;
 import helma.framework.core.Application;
 import helma.framework.core.RequestEvaluator;
 import helma.framework.core.SessionManager;
-import helma.objectmodel.INode;
+import helma.objectmodel.NodeInterface;
 
 public class SwarmSession extends Session {
 
@@ -55,7 +55,7 @@ public class SwarmSession extends Session {
         if (modifiedInRequest || modifiedCacheNode) {
             sessionMgr.broadcastSession(this, reval, modifiedCacheNode);
         }
-        super.commit(reval, smgr);
+        super.commit(smgr);
     }
 
     /**
@@ -77,7 +77,7 @@ public class SwarmSession extends Session {
 
     protected boolean wasModified() {
         // true if either session state or cachenode have been modified in the past
-        INode cache = getCacheNode();
+        NodeInterface cache = getCacheNode();
         return lastModified != onSince ||
                cache.created() != cache.lastModified();
     }
