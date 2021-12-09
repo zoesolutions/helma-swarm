@@ -44,8 +44,8 @@
                deprecation="off">
             <classpath>
                 <pathelement location="${helma.install.dir}/lib/helma.jar"/>
-                <pathelement location="${helma.install.dir}/lib/commons-logging.jar"/>
-                <pathelement location="lib/jgroups-all.jar"/>
+                <pathelement location="${helma.install.dir}/lib/commons-logging-1.2.jar"/>
+                <pathelement location="lib/jgroups-2.12.3.Final.jar"/>
             </classpath>
         </javac>
         <jar jarfile="lib/helmaswarm-${version}.jar"
@@ -56,9 +56,11 @@
     <target name="install" depends="init,jar">
         <copy file="lib/helmaswarm-${version}.jar"
             todir="${helma.install.dir}/lib/ext/" />
-        <copy file="lib/jgroups-all.jar" 
+        <copy file="lib/jgroups-2.12.3.Final.jar" 
             todir="${helma.install.dir}/lib/ext/" />
         <copy file="lib/concurrent.jar"
+            todir="${helma.install.dir}/lib/ext/" />
+        <copy file="lib/mysql-connector-java-6.0.6.jar"
             todir="${helma.install.dir}/lib/ext/" />
     </target>
 
