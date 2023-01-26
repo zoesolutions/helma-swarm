@@ -60,7 +60,7 @@
             todir="${helma.install.dir}/lib/ext/" />
         <copy file="lib/concurrent.jar"
             todir="${helma.install.dir}/lib/ext/" />
-        <copy file="lib/mysql-connector-java-6.0.6.jar"
+        <copy file="lib/mysql-connector-j-8.0.31.jar"
             todir="${helma.install.dir}/lib/ext/" />
     </target>
 
