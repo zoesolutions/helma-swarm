@@ -37,7 +37,7 @@
         <mkdir dir="classes"/>
         <javac srcdir="src"
                source="6"
-               target="11"
+               target="8"
                destdir="classes"
                debug="on"
                optimize="on"
