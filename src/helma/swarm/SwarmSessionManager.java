@@ -42,7 +42,8 @@ public class SwarmSessionManager extends SessionManager
     Address address;
     Log log;
     volatile Thread runner;
-    HashSet touched = new HashSet(), discarded = new HashSet();
+    Set touched = Collections.synchronizedSet(new HashSet());
+    Set discarded = Collections.synchronizedSet(new HashSet());
     boolean debug;
 
     ////////////////////////////////////////////////////////
@@ -161,6 +162,7 @@ public class SwarmSessionManager extends SessionManager
                 Session session = getSession(update.sessionId);
                 if (session == null) {
                     session = createSession(update.sessionId);
+                    registerSession(session);
                 }
                 session.setMessage(update.message);
                 session.setDebugBuffer(update.debugBuffer);
@@ -256,13 +258,16 @@ public class SwarmSessionManager extends SessionManager
 
     void broadcastIds(int operation, Set idSet) {
         try {
-            if (!idSet.isEmpty()) {
-                Object[] ids = idSet.toArray();
-                for (int i = 0; i < ids.length; i++)
-                    idSet.remove(ids[i]);
-                Serializable idlist = new SessionIdList(operation, ids);
-                adapter.send(new Message(null, address, idlist));
+            Object[] ids;
+            synchronized (idSet) {
+                if (idSet.isEmpty()) {
+                    return;
+                }
+                ids = idSet.toArray();
+                idSet.clear();
             }
+            Serializable idlist = new SessionIdList(operation, ids);
+            adapter.send(new Message(null, address, idlist));
         } catch (Exception x) {
             log.error("Error broadcasting session list", x);
         }
@@ -320,4 +325,3 @@ public class SwarmSessionManager extends SessionManager
         }
     }
 }
-
