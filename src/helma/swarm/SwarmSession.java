@@ -42,6 +42,11 @@ public class SwarmSession extends Session {
         sessionMgr.touchSession(this);
     }
 
+    public void commit(SessionManager smgr) {
+        RequestEvaluator reval = app.getCurrentRequestEvaluator();
+        commitInternal(reval, smgr);
+    }
+
     void replicatedTouch() {
         super.touch();
     }
@@ -51,8 +56,12 @@ public class SwarmSession extends Session {
      * @param reval the request evaluator that handled the request
      */
     public void commit(RequestEvaluator reval, SessionManager smgr) {
+        commitInternal(reval, smgr);
+    }
+
+    private void commitInternal(RequestEvaluator reval, SessionManager smgr) {
         boolean modifiedCacheNode = cacheLastModified != cacheNode.lastModified();
-        if (modifiedInRequest || modifiedCacheNode) {
+        if ((modifiedInRequest || modifiedCacheNode) && reval != null) {
             sessionMgr.broadcastSession(this, reval, modifiedCacheNode);
         }
         super.commit(smgr);
@@ -83,4 +92,3 @@ public class SwarmSession extends Session {
     }
 
 }
-
