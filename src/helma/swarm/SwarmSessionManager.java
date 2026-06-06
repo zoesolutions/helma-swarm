@@ -241,8 +241,23 @@ public class SwarmSessionManager extends SessionManager
     }
 
     void broadcastSession(SwarmSession session, RequestEvaluator reval, boolean transferCacheNode) {
-        log.debug("Broadcasting changed session: " + session);
+        if (!app.isRunning()) {
+            return;
+        }
+        RequestEvaluator borrowed = null;
         try {
+            if (reval == null) {
+                // A request thread already holds its own evaluator across commit(), so
+                // borrowing a second one here doubles pool demand. Skip rather than block
+                // (Application.getEvaluator() would sleep up to 12s on an exhausted pool).
+                if (!canBorrowEvaluatorWithoutBlocking()) {
+                    log.warn("SwarmSession: Skipping session broadcast, evaluator pool exhausted (free="
+                            + app.countFreeEvaluators() + ", total=" + app.countEvaluators() + ")");
+                    return;
+                }
+                reval = borrowed = app.getEvaluator();
+            }
+            log.debug("SwarmSession: Broadcasting changed session: " + session);
             if (session.isDistributed()) {
                 SessionUpdate update = new SessionUpdate(session, reval, transferCacheNode);
                 adapter.send(new Message(null, address, update));
@@ -252,8 +267,20 @@ public class SwarmSessionManager extends SessionManager
                 adapter.send(new Message(null, address, (Serializable) bytes));
             }
         } catch (Exception x) {
-            log.error("Error in session replication", x);
+            log.error("SwarmSession: Error in session replication", x);
+        } finally {
+            if (borrowed != null) {
+                app.releaseEvaluator(borrowed);
+            }
         }
+    }
+
+    private boolean canBorrowEvaluatorWithoutBlocking() {
+        if (app.countFreeEvaluators() > 0) {
+            return true;
+        }
+        int maxThreads = Integer.parseInt(app.getProperty("maxThreads", "50").trim());
+        return app.countEvaluators() < maxThreads;
     }
 
     void broadcastIds(int operation, Set idSet) {

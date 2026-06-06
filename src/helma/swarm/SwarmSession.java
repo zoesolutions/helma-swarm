@@ -61,7 +61,10 @@ public class SwarmSession extends Session {
 
     private void commitInternal(RequestEvaluator reval, SessionManager smgr) {
         boolean modifiedCacheNode = cacheLastModified != cacheNode.lastModified();
-        if ((modifiedInRequest || modifiedCacheNode) && reval != null) {
+        // reval is null on the per-request path: Helma clears the current-evaluator
+        // ThreadLocal before calling commit(SessionManager). broadcastSession tolerates
+        // a null reval by borrowing one from the evaluator pool.
+        if (modifiedInRequest || modifiedCacheNode) {
             sessionMgr.broadcastSession(this, reval, modifiedCacheNode);
         }
         super.commit(smgr);
