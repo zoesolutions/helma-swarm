@@ -149,7 +149,12 @@ public class SwarmSessionManager extends SessionManager
                 SwarmSession session = (SwarmSession) bytesToObject((byte[]) object);
                 session.setApp(app);
                 session.sessionMgr = this;
-                registerSession(session);
+                Session local = getSession(session.getSessionId());
+                if (local == null) {
+                    registerSession(session);
+                } else {
+                    mergeSession(local, session);
+                }
                 if (debug) {
                     log.debug("Received session: " + session);
                 }
@@ -159,18 +164,29 @@ public class SwarmSessionManager extends SessionManager
         } else if (object instanceof SessionUpdate) {
             try {
                 SessionUpdate update = (SessionUpdate) object;
+                NodeInterface cacheNode = null;
+                if (update.cacheNodeChanged) {
+                    cacheNode = (NodeInterface) bytesToObject(update.cacheNode);
+                    if (cacheNode == null) {
+                        if (debug) {
+                            log.debug("Discarded session update with empty cache node: " + update.sessionId);
+                        }
+                        return;
+                    }
+                }
                 Session session = getSession(update.sessionId);
                 if (session == null) {
+                    if (!update.cacheNodeChanged) {
+                        if (debug) {
+                            log.debug("Discarded session update without local base: " + update.sessionId);
+                        }
+                        return;
+                    }
                     session = createSession(update.sessionId);
+                    mergeUpdate(session, update, cacheNode, true);
                     registerSession(session);
-                }
-                session.setMessage(update.message);
-                session.setDebugBuffer(update.debugBuffer);
-                session.setUserHandle(update.userHandle);
-                session.setUID(update.uid);
-                if (update.cacheNode != null) {
-                    Object cacheNode = bytesToObject(update.cacheNode);
-                    session.setCacheNode((NodeInterface) cacheNode);
+                } else {
+                    mergeUpdate(session, update, cacheNode, false);
                 }
                 if (debug) {
                     log.debug("Received session update: " + session);
@@ -206,15 +222,32 @@ public class SwarmSessionManager extends SessionManager
 
     public byte[] getState() {
         Map map = getSessions();
+        Hashtable state = new Hashtable();
         RequestEvaluator reval = app.getEvaluator();
         try {
-            return objectToBytes(map, reval);
+            Iterator it = map.values().iterator();
+            while (it.hasNext()) {
+                Object obj = it.next();
+                if (!(obj instanceof SwarmSession)) {
+                    log.warn("SwarmSession: Skipping non-swarm session in getState(): " + obj);
+                    continue;
+                }
+                SwarmSession session = (SwarmSession) obj;
+                try {
+                    state.put(session.getSessionId(), objectToBytes(session, reval));
+                } catch (NotSerializableException x) {
+                    log.warn("SwarmSession: Skipping non-serializable session in getState(): " + session, x);
+                } catch (IOException x) {
+                    log.warn("SwarmSession: Skipping session after serialization error in getState(): " + session, x);
+                }
+            }
+            return objectToBytes(state, reval);
         } catch (IOException x) {
             log.error("Error in getState()", x);
             throw new RuntimeException("Error in getState(): "+x);
         } finally {
             if (debug) {
-                log.debug("Returned session table: " + map);
+                log.debug("Returned session table: " + state.keySet());
             }
             app.releaseEvaluator(reval);
         }
@@ -224,18 +257,71 @@ public class SwarmSessionManager extends SessionManager
         if (bytes != null) {
             try {
                 Hashtable map = (Hashtable) bytesToObject(bytes);
-                Iterator it = map.values().iterator();
+                Iterator it = map.entrySet().iterator();
                 while (it.hasNext()) {
-                    SwarmSession session = (SwarmSession) it.next();
-                    session.setApp(app);
-                    session.sessionMgr = SwarmSessionManager.this;
+                    Map.Entry entry = (Map.Entry) it.next();
+                    try {
+                        Object value = entry.getValue();
+                        SwarmSession session = value instanceof byte[] ?
+                                (SwarmSession) bytesToObject((byte[]) value) : (SwarmSession) value;
+                        session.setApp(app);
+                        session.sessionMgr = SwarmSessionManager.this;
+                        Session local = getSession(session.getSessionId());
+                        if (local == null) {
+                            registerSession(session);
+                        } else {
+                            mergeSession(local, session);
+                        }
+                    } catch (Exception x) {
+                        log.warn("SwarmSession: Skipping session from received state: " + entry.getKey(), x);
+                    }
                 }
-                sessions = map;
                 if (debug) {
-                    log.debug("Received session map: " + map);
+                    log.debug("Received session map: " + map.keySet());
                 }
             } catch (Exception x) {
                 log.error ("Error in setState()", x);
+            }
+        }
+    }
+
+    private void mergeSession(Session local, SwarmSession remote) {
+        synchronized (local) {
+            if (remote.lastModified() >= local.lastModified()) {
+                local.setMessage(remote.getMessage());
+                local.setDebugBuffer(remote.getDebugBuffer());
+                local.setUserHandle(remote.getUserHandle());
+                local.setUID(remote.getUID());
+                local.setLastModified(remote.lastModified());
+            }
+            NodeInterface remoteCache = remote.getCacheNode();
+            NodeInterface localCache = local.getCacheNode();
+            if (remoteCache != null && (localCache == null ||
+                    remoteCache.lastModified() >= localCache.lastModified())) {
+                local.setCacheNode(remoteCache);
+            }
+            if (local instanceof SwarmSession) {
+                ((SwarmSession) local).setDistributed(remote.isDistributed());
+            }
+        }
+    }
+
+    private void mergeUpdate(Session session, SessionUpdate update, NodeInterface cacheNode,
+                             boolean newSession) {
+        synchronized (session) {
+            if (newSession || update.lastModified >= session.lastModified()) {
+                session.setMessage(update.message);
+                session.setDebugBuffer(update.debugBuffer);
+                session.setUserHandle(update.userHandle);
+                session.setUID(update.uid);
+                session.setLastModified(update.lastModified);
+            }
+            if (update.cacheNodeChanged && cacheNode != null) {
+                NodeInterface localCache = session.getCacheNode();
+                if (newSession || localCache == null ||
+                        update.cacheNodeLastModified >= localCache.lastModified()) {
+                    session.setCacheNode(cacheNode);
+                }
             }
         }
     }
@@ -331,11 +417,16 @@ public class SwarmSessionManager extends SessionManager
     }
 
     static class SessionUpdate implements Serializable {
+        private static final long serialVersionUID = 3875724113689813472L;
+
         String sessionId;
         String message;
         StringBuffer debugBuffer;
         NodeHandle userHandle;
         String uid;
+        long lastModified;
+        long cacheNodeLastModified;
+        boolean cacheNodeChanged;
         byte[] cacheNode = null;
 
         SessionUpdate(SwarmSession session, RequestEvaluator reval, boolean transferCacheNode)
@@ -345,6 +436,9 @@ public class SwarmSessionManager extends SessionManager
             this.debugBuffer = session.getDebugBuffer();
             this.userHandle = session.getUserHandle();
             this.uid = session.getUID();
+            this.lastModified = session.lastModified();
+            this.cacheNodeLastModified = session.getCacheNode().lastModified();
+            this.cacheNodeChanged = transferCacheNode;
             // only transfer cache node if it has changed
             if (transferCacheNode) {
                 this.cacheNode = objectToBytes(session.getCacheNode(), reval);
