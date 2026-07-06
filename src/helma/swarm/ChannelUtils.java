@@ -68,17 +68,55 @@ public class ChannelUtils {
         }
     }
 
-    public static boolean isMaster(Application app) {
+    private static Channel getExistingChannel(Application app) {
         PullPushAdapter adapter = (PullPushAdapter) adapters.get(app);
-        if (adapter != null) {
-            try {
-                Channel channel = (Channel) adapter.getTransport();
+        return adapter == null ? null : (Channel) adapter.getTransport();
+    }
+
+    public static boolean isConnected(Application app) {
+        try {
+            Channel channel = getExistingChannel(app);
+            return channel != null && channel.isConnected();
+        } catch (Exception x) {
+            app.logError("ChannelUtils.isConnected()", x);
+        }
+        return false;
+    }
+
+    public static int getViewSize(Application app) {
+        try {
+            Channel channel = getExistingChannel(app);
+            View view = channel == null ? null : channel.getView();
+            return view == null ? 0 : view.getMembers().size();
+        } catch (Exception x) {
+            app.logError("ChannelUtils.getViewSize()", x);
+        }
+        return 0;
+    }
+
+    public static String getView(Application app) {
+        try {
+            Channel channel = getExistingChannel(app);
+            View view = channel == null ? null : channel.getView();
+            return view == null ? "" : view.toString();
+        } catch (Exception x) {
+            app.logError("ChannelUtils.getView()", x);
+        }
+        return "";
+    }
+
+    public static boolean isMaster(Application app) {
+        try {
+            Channel channel = getExistingChannel(app);
+            if (channel != null) {
                 View view = channel.getView();
                 Address address = channel.getLocalAddress();
-                return address.equals(view.getMembers().firstElement());
-            } catch (Exception x) {
-                app.logError("ChannelUtils.isMaster()", x);
+                if (view != null && address != null && !view.getMembers().isEmpty()) {
+                    return address.equals(view.getMembers().firstElement());
+                }
             }
+        } catch (Exception x) {
+            app.logError("ChannelUtils.isMaster()", x);
         }
         return false;
     }

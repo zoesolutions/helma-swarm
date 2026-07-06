@@ -102,6 +102,26 @@ The default UDP multicast stack uses port 22024 on multicast address
 instances are operated on the same local network to avoid unnecessary network
 traffic.
 
+Monitoring and Readiness
+========================
+
+HelmaSwarm exposes read-only channel status helpers through
+helma.swarm.ChannelUtils:
+
+  isConnected(app)
+  getViewSize(app)
+  getView(app)
+  isMaster(app)
+
+These helpers only inspect the existing JGroups channel. They do not create a
+new channel and do not trigger a swarm join. This makes them suitable for
+application-level monitoring and readiness endpoints.
+
+Applications that use these helpers should keep Swarm-aware readiness
+explicitly configurable. Non-Swarm deployments must not require these helpers
+or a connected swarm channel. For iiEFS/San Pedro this is controlled by the
+application property monitoring.swarm.required.
+
 Credits & Feedback
 ==================
 
