@@ -19,6 +19,7 @@ import org.jgroups.*;
 import org.jgroups.blocks.PullPushAdapter;
 import org.w3c.dom.*;
 import helma.framework.core.Application;
+import helma.framework.core.SessionManager;
 import helma.framework.repository.RepositoryInterface;
 import helma.framework.repository.ResourceInterface;
 import helma.framework.repository.FileResource;
@@ -29,48 +30,253 @@ import java.util.WeakHashMap;
 import java.util.Iterator;
 import java.io.File;
 
+interface StrictChannelBootstrap {
+    PullPushAdapter bootstrap(Application app, SwarmLifecycle lifecycle)
+            throws ChannelException;
+}
+
 public class ChannelUtils {
 
     // weak hashmap for pull-push-adapters
     static WeakHashMap adapters = new WeakHashMap();
+    static WeakHashMap lifecycles = new WeakHashMap();
 
     // Ids for multiplexing PullPushAdapter.
     // SwarmSessionManager acts as main listener so it can use state exchange. 
     final static Integer CACHE = new Integer(1);
     final static Integer IDGEN = new Integer(2);
+    final static Integer SESSION_CONTROL = new Integer(3);
 
     static PullPushAdapter getAdapter(Application app)
             throws ChannelException {
-        PullPushAdapter adapter = (PullPushAdapter) adapters.get(app);
+        return getAdapter(app, new StrictChannelBootstrap() {
+            public PullPushAdapter bootstrap(Application target,
+                                             SwarmLifecycle lifecycle)
+                    throws ChannelException {
+                return new SwarmChannelBootstrap(target, lifecycle).bootstrap();
+            }
+        });
+    }
 
-        if (adapter == null) {
-            SwarmConfig config = new SwarmConfig(app);
-            Channel channel = new JChannel(config.getJGroupsProps());
-            String groupName = app.getProperty("swarm.name", app.getName());
-            channel.connect(groupName + "_swarm");
-            adapter = new PullPushAdapter(channel);
-            adapter.start();
-            adapters.put(app, adapter);
+    static PullPushAdapter getAdapter(Application app,
+                                      StrictChannelBootstrap strictBootstrap)
+            throws ChannelException {
+        if (strictBootstrap == null) {
+            throw new NullPointerException("strictBootstrap");
+        }
+        PullPushAdapter adapter = getExistingAdapter(app);
+        if (adapter != null) {
+            return adapter;
         }
 
-        return adapter;
+        synchronized (app) {
+            adapter = getExistingAdapter(app);
+            if (adapter != null) {
+                return adapter;
+            }
+
+            boolean strict;
+            try {
+                strict = SwarmJoinPolicy.strictRequested(app.getProperties());
+            } catch (IllegalArgumentException invalidStrictFlag) {
+                strict = true;
+            }
+
+            if (!strict) {
+                SwarmConfig config = new SwarmConfig(app);
+                Channel channel = new JChannel(config.getJGroupsProps());
+                String groupName = app.getProperty("swarm.name", app.getName());
+                channel.connect(groupName + "_swarm");
+                adapter = new PullPushAdapter(channel);
+                adapter.start();
+                SwarmLifecycle lifecycle = new SwarmLifecycle(
+                        SwarmJoinPolicy.from(app.getProperties()));
+                lifecycle.publishLegacyReady(adapter);
+                synchronized (adapters) {
+                    adapters.put(app, adapter);
+                    lifecycles.put(app, lifecycle);
+                }
+                ProcessShutdown.current().register(lifecycle);
+                return adapter;
+            }
+
+            SwarmLifecycle lifecycle = new SwarmLifecycle(
+                    SwarmJoinPolicy.strictDefaultsForInvalidConfiguration());
+            synchronized (adapters) {
+                lifecycles.put(app, lifecycle);
+            }
+            ProcessShutdown.current().register(lifecycle);
+            adapter = strictBootstrap.bootstrap(app, lifecycle);
+            synchronized (adapters) {
+                if (!lifecycle.publishPreReady(adapter)) {
+                    adapter.stop();
+                    throw new ChannelException(
+                            "HelmaSwarm bootstrap stopped for JVM shutdown");
+                }
+                adapters.put(app, adapter);
+            }
+            return adapter;
+        }
     }
 
     static void stopAdapter(Application app) {
-        PullPushAdapter adapter = (PullPushAdapter) adapters.remove(app);
-        if (adapter != null) {
-            Channel channel = (Channel) adapter.getTransport();
-            if (channel.isConnected())
-                channel.disconnect();
-            if (channel.isOpen())
-                channel.close();
-            adapter.stop();
+        PullPushAdapter adapter;
+        SwarmLifecycle lifecycle;
+        synchronized (app) {
+            synchronized (adapters) {
+                adapter = (PullPushAdapter) adapters.remove(app);
+                lifecycle = (SwarmLifecycle) lifecycles.remove(app);
+            }
+            if (lifecycle != null) {
+                ProcessShutdown.current().unregister(lifecycle);
+                lifecycle.stop();
+                return;
+            }
+            if (adapter != null) {
+                Channel channel = (Channel) adapter.getTransport();
+                adapter.stop();
+                if (channel.isConnected())
+                    channel.disconnect();
+                if (channel.isOpen())
+                    channel.close();
+            }
         }
     }
 
+    static PullPushAdapter getExistingAdapter(Application app) {
+        synchronized (adapters) {
+            return (PullPushAdapter) adapters.get(app);
+        }
+    }
+
+    static SwarmLifecycle getExistingLifecycle(Application app) {
+        synchronized (adapters) {
+            return (SwarmLifecycle) lifecycles.get(app);
+        }
+    }
+
+    static SessionCapabilityService getExistingControlService(Application app) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        return lifecycle == null ? null : lifecycle.getControlService();
+    }
+
+    static void commitSessionReady(Application app, SessionManager manager) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        if (lifecycle == null || !lifecycle.getPolicy().isStrict()) {
+            return;
+        }
+        if (lifecycle.getMemberRole() != SwarmJoinPolicy.MemberRole.SESSION
+                || manager == null || manager != app.getSessionManager()
+                || !(manager instanceof SwarmSessionManager)) {
+            lifecycle.configurationError(new IllegalStateException(
+                    "memberRole=session requires the active SwarmSessionManager"));
+            awaitProcessShutdown(lifecycle);
+            return;
+        }
+        lifecycle.setCapability(SwarmLifecycle.Capability.SESSION_READY);
+        lifecycle.commitReady();
+    }
+
+    static void commitNonSessionReady(Application app, SessionManager manager) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        if (lifecycle == null || !lifecycle.getPolicy().isStrict()) {
+            return;
+        }
+        if (lifecycle.getMemberRole() != SwarmJoinPolicy.MemberRole.NON_SESSION
+                || manager == null || manager != app.getSessionManager()
+                || !"helma.swarm.SwarmNonSessionManager".equals(
+                        manager.getClass().getName())) {
+            lifecycle.configurationError(new IllegalStateException(
+                    "memberRole=non-session requires the active SwarmNonSessionManager"));
+            awaitProcessShutdown(lifecycle);
+            return;
+        }
+        lifecycle.setCapability(SwarmLifecycle.Capability.NON_SESSION);
+        lifecycle.commitReady();
+    }
+
+    private static void awaitProcessShutdown(SwarmLifecycle lifecycle) {
+        ProcessShutdown shutdown = ProcessShutdown.current();
+        while (!shutdown.isShuttingDown()) {
+            try {
+                Thread.sleep(1000L);
+            } catch (InterruptedException interrupted) {
+                Thread.interrupted();
+                lifecycle.configurationError(interrupted);
+            }
+        }
+        lifecycle.stop();
+    }
+
     private static Channel getExistingChannel(Application app) {
-        PullPushAdapter adapter = (PullPushAdapter) adapters.get(app);
+        PullPushAdapter adapter = getExistingAdapter(app);
         return adapter == null ? null : (Channel) adapter.getTransport();
+    }
+
+    public static boolean isJoinStateAvailable(Application app) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        return lifecycle != null;
+    }
+
+    public static String getJoinStatus(Application app) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        return lifecycle == null ? SwarmLifecycle.JoinStatus.NOT_STARTED.name()
+                : lifecycle.getJoinStatus().name();
+    }
+
+    public static int getJoinAttempts(Application app) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        return lifecycle == null ? 0 : lifecycle.getAttemptCount();
+    }
+
+    public static String getJoinLastError(Application app) {
+        SwarmLifecycle lifecycle = getExistingLifecycle(app);
+        return lifecycle == null ? "" : lifecycle.getLastError();
+    }
+
+    private static SwarmSessionManager getExistingSessionManager(Application app) {
+        SessionManager manager = app == null ? null : app.getSessionManager();
+        return manager instanceof SwarmSessionManager
+                ? (SwarmSessionManager) manager : null;
+    }
+
+    public static boolean isSessionStateAvailable(Application app) {
+        return getExistingSessionManager(app) != null;
+    }
+
+    public static boolean isSessionStateInitialized(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager != null && manager.isSessionStateInitialized();
+    }
+
+    public static String getSessionStateStatus(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager == null ? "" : manager.getSessionStateStatus();
+    }
+
+    public static String getSessionStateProvider(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager == null ? "" : manager.getSessionStateProvider();
+    }
+
+    public static String getKnownSessionStateProviders(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager == null ? "" : manager.getKnownSessionStateProviders();
+    }
+
+    public static int getLastReceivedStateSessionCount(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager == null ? 0 : manager.getLastReceivedStateSessionCount();
+    }
+
+    public static String getSessionStateLastError(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager == null ? "" : manager.getSessionStateLastError();
+    }
+
+    public static boolean isControlProtocolComplete(Application app) {
+        SwarmSessionManager manager = getExistingSessionManager(app);
+        return manager != null && manager.isControlProtocolComplete();
     }
 
     public static boolean isConnected(Application app) {
