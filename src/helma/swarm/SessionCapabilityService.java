@@ -63,7 +63,8 @@ final class SessionCapabilityService implements MessageListener {
         requireTimeout(timeout);
         View snapshot = currentView();
         Address local = localAddress();
-        if (snapshot == null || local == null || !snapshot.containsMember(local)) {
+        if (snapshot == null || local == null || !snapshot.containsMember(local)
+                || !hasBootstrapMinimum(snapshot.getMembers().size())) {
             protocolComplete = false;
             return null;
         }
@@ -87,6 +88,10 @@ final class SessionCapabilityService implements MessageListener {
             }
             await(round, timeout);
             CapabilityView complete = round.complete(currentViewId());
+            if (complete != null
+                    && !hasBootstrapMinimum(complete.getCapabilities().size())) {
+                complete = null;
+            }
             protocolComplete = complete != null;
             if (complete != null) {
                 lastCompleteView = complete;
@@ -220,6 +225,29 @@ final class SessionCapabilityService implements MessageListener {
         return protocolComplete && view != null && view.getViewId().equals(currentViewId());
     }
 
+    boolean isCurrentBootstrapViewSufficient(CapabilityView view) {
+        if (view == null || view != lastCompleteView || !isProtocolComplete()) {
+            return false;
+        }
+        View current = currentView();
+        return current != null
+                && view.getViewId().equals(viewId(current))
+                && hasBootstrapMinimum(current.getMembers().size())
+                && hasBootstrapMinimum(view.getCapabilities().size());
+    }
+
+    String bootstrapViewRejectionReason(CapabilityView view) {
+        int minimum = lifecycle.getPolicy().getMinViewSize();
+        View current = currentView();
+        int currentSize = current == null ? 0 : current.getMembers().size();
+        int capabilitySize = view == null ? 0 : view.getCapabilities().size();
+        int actual = Math.min(currentSize, capabilitySize);
+        if (actual < minimum) {
+            return "capability view size " + actual + " < required " + minimum;
+        }
+        return "capability view changed during bootstrap";
+    }
+
     boolean isControlProtocolComplete() {
         return isProtocolComplete();
     }
@@ -343,6 +371,11 @@ final class SessionCapabilityService implements MessageListener {
     private String currentViewId() {
         View view = currentView();
         return view == null ? null : viewId(view);
+    }
+
+    private boolean hasBootstrapMinimum(int size) {
+        SwarmJoinPolicy policy = lifecycle.getPolicy();
+        return policy != null && size >= policy.getMinViewSize();
     }
 
     private static String viewId(View view) {
