@@ -1,9 +1,0 @@
-[
-  {
-    "name": "mariadb",
-    "listen": "0.0.0.0:13306",
-    "upstream": "mariadb:3306",
-    "enabled": true,
-    "toxics": []
-  }
-]
