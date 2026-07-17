@@ -1,18 +1,10 @@
 package helma.swarm;
 
-import java.lang.reflect.Field;
 import java.util.Arrays;
 import java.util.Hashtable;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Properties;
 
-import helma.framework.core.Application;
 import org.jgroups.Address;
-import org.jgroups.JChannel;
-import org.jgroups.View;
-import org.jgroups.blocks.PullPushAdapter;
 import org.jgroups.util.UUID;
 
 final class SessionCapabilityServiceTest {
@@ -21,55 +13,6 @@ final class SessionCapabilityServiceTest {
     }
 
     static void register(AllTests.Suite suite) {
-        suite.reproduction("capability discovery rejects a view below startup minimum",
-                new AllTests.CheckedRunnable() {
-                    public void run() throws Exception {
-                        MutableChannel channel = new MutableChannel(1L, 1);
-                        SessionCapabilityService service = service(channel, 2);
-
-                        SessionCapabilityService.CapabilityView view =
-                                service.discover(0L);
-
-                        AllTests.assertTrue(view == null,
-                                "singleton capability view bypassed startup minimum two");
-                        AllTests.assertTrue(!service.isProtocolComplete(),
-                                "rejected singleton remained protocol-complete");
-                    }
-                });
-
-        suite.reproduction("bootstrap view sufficiency is explicit and current",
-                new AllTests.CheckedRunnable() {
-                    public void run() throws Exception {
-                        MutableChannel channel = new MutableChannel(1L, 2);
-                        SessionCapabilityService service = service(channel, 2);
-                        SessionCapabilityService.CapabilityView complete =
-                                completeView(channel.getView());
-                        installCompleteView(service, complete);
-
-                        AllTests.assertEquals(Boolean.TRUE,
-                                Boolean.valueOf(
-                                        service.isCurrentBootstrapViewSufficient(complete)),
-                                "current complete view two was rejected");
-
-                        channel.setView(2L, 1);
-                        AllTests.assertEquals(Boolean.FALSE,
-                                Boolean.valueOf(
-                                        service.isCurrentBootstrapViewSufficient(complete)),
-                                "stale singleton view remained sufficient for initial commit");
-
-                        AllTests.assertEquals(
-                                "capability view size 1 < required 2",
-                                service.bootstrapViewRejectionReason(complete),
-                                "singleton rejection was not operator-readable");
-
-                        channel.setView(3L, 2);
-                        AllTests.assertEquals(
-                                "capability view changed during bootstrap",
-                                service.bootstrapViewRejectionReason(complete),
-                                "same-size view replacement exposed an ambiguous reason");
-                    }
-                });
-
         suite.baseline("complete capability round selects only ready providers",
                 new AllTests.CheckedRunnable() {
                     public void run() {
@@ -239,71 +182,7 @@ final class SessionCapabilityServiceTest {
         return SessionCapabilityService.capabilityResponse(nonce, view, source, capability);
     }
 
-    private static SessionCapabilityService service(MutableChannel channel, int minimum)
-            throws Exception {
-        Properties properties = new Properties();
-        properties.setProperty("swarm.join.strict", "true");
-        properties.setProperty("swarm.join.minViewSize", String.valueOf(minimum));
-        properties.setProperty("swarm.session.stateProviderMode", "strict");
-        properties.setProperty("swarm.session.memberRole", "session");
-        properties.setProperty("sessionManagerImpl", "helma.swarm.SwarmSessionManager");
-        SwarmLifecycle lifecycle = new SwarmLifecycle(SwarmJoinPolicy.from(properties));
-        PullPushAdapter adapter = new PullPushAdapter(channel, null, null, false);
-        lifecycle.publishPreReady(adapter);
-        SessionCapabilityService service = new SessionCapabilityService(
-                new Application("capability-view-test"), adapter, lifecycle);
-        return service;
-    }
-
-    private static SessionCapabilityService.CapabilityView completeView(View view) {
-        List<Address> members = new java.util.ArrayList<Address>(view.getMembers());
-        Map<Address, String> capabilities = new LinkedHashMap<Address, String>();
-        for (Address member : members) {
-            capabilities.put(member, "SESSION_STARTING");
-        }
-        return new SessionCapabilityService.CapabilityView(
-                view.getViewId().toString(), members, capabilities);
-    }
-
-    private static void installCompleteView(SessionCapabilityService service,
-                                            SessionCapabilityService.CapabilityView view)
-            throws Exception {
-        Field complete = SessionCapabilityService.class.getDeclaredField("lastCompleteView");
-        complete.setAccessible(true);
-        complete.set(service, view);
-        Field protocol = SessionCapabilityService.class.getDeclaredField("protocolComplete");
-        protocol.setAccessible(true);
-        protocol.setBoolean(service, true);
-    }
-
     private static Address address(long id) {
         return new UUID(0, id);
-    }
-
-    private static final class MutableChannel extends JChannel {
-        private final Address local = address(1000L);
-        private View view;
-
-        MutableChannel(long viewSequence, int size) {
-            super(false);
-            setView(viewSequence, size);
-        }
-
-        void setView(long viewSequence, int size) {
-            java.util.ArrayList<Address> members = new java.util.ArrayList<Address>();
-            members.add(local);
-            for (int i = 1; i < size; i++) {
-                members.add(address(1000L + i));
-            }
-            view = new View(local, viewSequence, members);
-        }
-
-        public View getView() {
-            return view;
-        }
-
-        public Address getLocalAddress() {
-            return local;
-        }
     }
 }

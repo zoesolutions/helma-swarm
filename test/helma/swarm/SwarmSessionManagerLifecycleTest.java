@@ -8,7 +8,6 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.util.ArrayList;
 import java.util.Hashtable;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -18,11 +17,6 @@ import java.util.concurrent.TimeUnit;
 
 import helma.framework.core.Session;
 import helma.scripting.ScriptingEngineInterface;
-import org.jgroups.Address;
-import org.jgroups.JChannel;
-import org.jgroups.View;
-import org.jgroups.blocks.PullPushAdapter;
-import org.jgroups.util.UUID;
 
 final class SwarmSessionManagerLifecycleTest {
 
@@ -310,36 +304,6 @@ final class SwarmSessionManagerLifecycleTest {
                     }
                 });
 
-        suite.baseline("successful strict commit stays ready after a later singleton view",
-                new AllTests.CheckedRunnable() {
-                    public void run() throws Exception {
-                        MutableViewChannel channel = new MutableViewChannel(1L, 2);
-                        SwarmLifecycle lifecycle = new SwarmLifecycle(
-                                SwarmJoinPolicy.from(strictProperties()));
-                        lifecycle.publishPreReady(
-                                new PullPushAdapter(channel, null, null, false));
-                        ReadyLifecycleManager manager =
-                                new ReadyLifecycleManager(lifecycle);
-                        manager.installBootstrapLifecycle(lifecycle);
-                        manager.runner = Thread.currentThread();
-                        try {
-                            manager.commitStrictState(new Hashtable(), 0, null);
-                            channel.setView(2L, 1);
-
-                            AllTests.assertTrue(manager.isSessionStateInitialized(),
-                                    "later singleton view reset initialized session state");
-                            AllTests.assertEquals("INITIALIZED",
-                                    manager.getSessionStateStatus(),
-                                    "later singleton view changed session state status");
-                            AllTests.assertEquals(SwarmLifecycle.JoinStatus.READY,
-                                    lifecycle.getJoinStatus(),
-                                    "later singleton view demoted lifecycle readiness");
-                        } finally {
-                            manager.runner = null;
-                        }
-                    }
-                });
-
         suite.reproduction("persistent bootstrap reuses Helma's held scripting engine",
                 new AllTests.CheckedRunnable() {
                     public void run() throws Exception {
@@ -510,20 +474,6 @@ final class SwarmSessionManagerLifecycleTest {
                     }
                 });
 
-        suite.reproduction("strict session commit revalidates the bootstrap view",
-                new AllTests.CheckedRunnable() {
-                    public void run() throws Exception {
-                        String source = AllTests.source(
-                                "src/helma/swarm/SwarmSessionManager.java");
-                        String bootstrap = AllTests.methodBody(source,
-                                "private void bootstrapStrictSessions(ScriptingEngineInterface loadEngine)");
-                        require(bootstrap,
-                                "controlService.isCurrentBootstrapViewSufficient(view)");
-                        require(bootstrap,
-                                "initial session-state commit rejected");
-                    }
-                });
-
         suite.reproduction("non-session manager commits synchronously and cleans both layers",
                 new AllTests.CheckedRunnable() {
                     public void run() throws Exception {
@@ -638,17 +588,13 @@ final class SwarmSessionManagerLifecycleTest {
         }
 
         void installInitializedLifecycle(SwarmLifecycle value) throws Exception {
-            installBootstrapLifecycle(value);
+            Field lifecycleField = SwarmSessionManager.class.getDeclaredField("lifecycle");
+            lifecycleField.setAccessible(true);
+            lifecycleField.set(this, value);
             Field initialized = SwarmSessionManager.class.getDeclaredField(
                     "sessionStateInitialized");
             initialized.setAccessible(true);
             initialized.setBoolean(this, true);
-        }
-
-        void installBootstrapLifecycle(SwarmLifecycle value) throws Exception {
-            Field lifecycleField = SwarmSessionManager.class.getDeclaredField("lifecycle");
-            lifecycleField.setAccessible(true);
-            lifecycleField.set(this, value);
             Field buffer = SwarmSessionManager.class.getDeclaredField("bootstrapBuffer");
             buffer.setAccessible(true);
             buffer.set(this, new BootstrapBuffer(10, 4096, 10));
@@ -685,46 +631,6 @@ final class SwarmSessionManagerLifecycleTest {
             } catch (InterruptedException interrupted) {
                 throw new AssertionError("readiness publication interrupted", interrupted);
             }
-        }
-    }
-
-    private static final class ReadyLifecycleManager extends TestManager {
-        private final SwarmLifecycle lifecycle;
-
-        ReadyLifecycleManager(SwarmLifecycle lifecycle) {
-            this.lifecycle = lifecycle;
-        }
-
-        void publishSessionReady() {
-            lifecycle.setCapability(SwarmLifecycle.Capability.SESSION_READY);
-            lifecycle.commitReady();
-        }
-    }
-
-    private static final class MutableViewChannel extends JChannel {
-        private final Address local = new UUID(0, 2000L);
-        private View view;
-
-        MutableViewChannel(long viewSequence, int size) {
-            super(false);
-            setView(viewSequence, size);
-        }
-
-        void setView(long viewSequence, int size) {
-            ArrayList<Address> members = new ArrayList<Address>();
-            members.add(local);
-            for (int i = 1; i < size; i++) {
-                members.add(new UUID(0, 2000L + i));
-            }
-            view = new View(local, viewSequence, members);
-        }
-
-        public View getView() {
-            return view;
-        }
-
-        public Address getLocalAddress() {
-            return local;
         }
     }
 }

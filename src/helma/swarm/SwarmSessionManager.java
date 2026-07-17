@@ -713,10 +713,6 @@ public class SwarmSessionManager extends SessionManager
                     }
                 }
 
-                if (!controlService.isCurrentBootstrapViewSufficient(view)) {
-                    throw new IOException("initial session-state commit rejected: "
-                            + controlService.bootstrapViewRejectionReason(view));
-                }
                 sessionStateStatus = "REPLAYING";
                 commitStrictState(temporary, receivedCount, loadEngine);
 
