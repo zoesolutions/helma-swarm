@@ -19,7 +19,7 @@ of Helma:
      Oracle, for instance).
 
 HelmaSwarm uses JGroups <http://jgroups.org> for communication between Helma
-instances. This version of Helmaswarm comes bundled with JGroups 2.4.1-sp3.
+instances. This version of HelmaSwarm comes bundled with JGroups 2.12.3.Final.
 
 Asynchronous Communication and Sticky Sessions
 ==============================================
@@ -101,6 +101,52 @@ The default UDP multicast stack uses port 22024 on multicast address
 224.0.0.132. It is advisable to use a different setting if multiple swarm
 instances are operated on the same local network to avoid unnecessary network
 traffic.
+
+Startup-only Join Retry
+=======================
+
+The normal legacy behavior creates one JGroups channel and attempts one join.
+It remains active when swarm.join.startupRetry is absent, or is false, and no
+startup retry settings are present.
+
+The startup-only retry is enabled as one complete app.properties profile:
+
+  swarm.join.startupRetry = true
+  swarm.join.minViewSize = 2
+  swarm.join.minViewWaitMillis = 10000
+  swarm.join.retryInitialDelayMillis = 1000
+  swarm.join.retryMaxDelayMillis = 60000
+
+Each failed connection or startup view timeout is closed completely before a
+fresh channel is created. The adapter is shared with SwarmCache,
+SwarmIDGenerator, and SwarmSessionManager only after the minimum startup view
+has been reached. Once published, a later loss of members does not replace,
+demote, or disconnect the adapter. Runtime quorum is deliberately outside this
+feature.
+
+For a standalone member, startupRetry may be enabled with minViewSize = 1. Its
+initial session-state lookup keeps the legacy single-attempt behavior. A
+clustered deployment with minViewSize greater than 1 retries a completed
+negative state transfer, but never starts a second transfer while the callback
+of an already accepted transfer is still pending.
+
+minViewSize accepts 1 through 32, minViewWaitMillis 100 through 60000, and
+retryInitialDelayMillis 1000 through 60000. retryMaxDelayMillis is fixed at
+60000 to bound the long-running retry rate. Startup tunables without an
+explicit startupRetry = true, old STRICT settings, and partial mixtures of
+legacy and retry profiles are invalid. Invalid startup configuration blocks
+application startup until process shutdown instead of allowing a partially
+initialized application.
+
+Enable, disable, and roll back the complete profile atomically. Do not mix
+members with different startup profiles or different session-manager behavior
+inside one swarm.
+
+The Java 8 verification commands are:
+
+  ant clean test
+  ant process-test
+  HELMA_SWARM_IT=1 ant integration-test
 
 Monitoring and Readiness
 ========================

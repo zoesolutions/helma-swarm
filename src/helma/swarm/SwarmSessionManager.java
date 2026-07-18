@@ -45,6 +45,11 @@ public class SwarmSessionManager extends SessionManager
     Set touched = Collections.synchronizedSet(new HashSet());
     Set discarded = Collections.synchronizedSet(new HashSet());
     boolean debug;
+    volatile boolean initialStateAttemptActive;
+    volatile boolean initialStateApplied;
+    volatile boolean initialStateCompleted;
+    private static final Random SESSION_RETRY_RANDOM = new Random();
+    private final Object initialStateMonitor = new Object();
 
     ////////////////////////////////////////////////////////
     // SessionManager functionality
@@ -66,7 +71,10 @@ public class SwarmSessionManager extends SessionManager
             address = channel.getLocalAddress();
             // register us as main message listeners so we can exchange state
             adapter.setListener(this);
-            if (!channel.getState(null, 5000)) {
+            StartupJoinPolicy policy = StartupJoinPolicy.parse(app.getProperties());
+            if (policy.isEnabled() && policy.getMinViewSize() > 1) {
+                synchronizeInitialState(channel);
+            } else if (!channel.getState(null, 5000)) {
                 log.debug("Couldn't get session state. First instance in swarm?");
             }
             // start broadcaster thread
@@ -77,6 +85,88 @@ public class SwarmSessionManager extends SessionManager
             log.error("HelmaSwarm: Error starting/joining channel", e);
             e.printStackTrace();
         }
+    }
+
+    private void synchronizeInitialState(final Channel channel)
+            throws ChannelException {
+        View initialView = channel.getView();
+        final boolean initialCoordinator = isInitialCoordinator(address, initialView);
+        final SessionStateStartupToken token = new SessionStateStartupToken(
+                new Runnable() {
+                    public void run() {
+                        ChannelUtils.stopAdapter(app);
+                    }
+                });
+        ChannelUtils.registerSessionStartup(token);
+        try {
+            InitialSessionStateSynchronizer synchronizer =
+                    new InitialSessionStateSynchronizer(
+                            new InitialSessionStateSynchronizer.Transfer() {
+                                public boolean request() throws Exception {
+                                    return channel.getState(null, 5000);
+                                }
+                            }, new InitialSessionStateSynchronizer.ApplyAck() {
+                                public void begin() {
+                                    synchronized (initialStateMonitor) {
+                                        initialStateApplied = false;
+                                        initialStateCompleted = false;
+                                        initialStateAttemptActive = true;
+                                    }
+                                }
+
+                                public boolean isApplied() {
+                                    return initialStateApplied;
+                                }
+
+                                public boolean awaitApplied(long timeoutMillis)
+                                        throws InterruptedException {
+                                    long deadline = timeoutMillis <= 0L ? 0L
+                                            : System.currentTimeMillis() + timeoutMillis;
+                                    synchronized (initialStateMonitor) {
+                                        while (!initialStateCompleted) {
+                                            if (deadline == 0L) {
+                                                initialStateMonitor.wait();
+                                            } else {
+                                                long remaining = deadline
+                                                        - System.currentTimeMillis();
+                                                if (remaining <= 0L) {
+                                                    return false;
+                                                }
+                                                initialStateMonitor.wait(remaining);
+                                            }
+                                        }
+                                        return initialStateApplied;
+                                    }
+                                }
+
+                                public void end() {
+                                    initialStateAttemptActive = false;
+                                }
+                            }, new InitialSessionStateSynchronizer.SeedPolicy() {
+                                public boolean maySeed() {
+                                    return initialCoordinator && getSessions().isEmpty();
+                                }
+                            }, new InitialSessionStateSynchronizer.Delay() {
+                                public long next(long capMillis) {
+                                    long lower = capMillis / 2L;
+                                    long width = capMillis - lower;
+                                    synchronized (SESSION_RETRY_RANDOM) {
+                                        return lower + (long) (SESSION_RETRY_RANDOM.nextDouble()
+                                                * (width + 1L));
+                                    }
+                                }
+                            }, token);
+            synchronizer.synchronize();
+        } finally {
+            initialStateAttemptActive = false;
+            ChannelUtils.deregisterSessionStartup(token);
+        }
+    }
+
+    static boolean isInitialCoordinator(Address localAddress, View initialView) {
+        Vector members = initialView == null ? null : initialView.getMembers();
+        return localAddress != null && members != null && !members.isEmpty()
+                && localAddress.equals(members.firstElement());
     }
 
 
@@ -254,34 +344,95 @@ public class SwarmSessionManager extends SessionManager
     }
 
     public void setState(byte[] bytes) {
-        if (bytes != null) {
-            try {
-                Hashtable map = (Hashtable) bytesToObject(bytes);
-                Iterator it = map.entrySet().iterator();
-                while (it.hasNext()) {
-                    Map.Entry entry = (Map.Entry) it.next();
-                    try {
-                        Object value = entry.getValue();
-                        SwarmSession session = value instanceof byte[] ?
-                                (SwarmSession) bytesToObject((byte[]) value) : (SwarmSession) value;
-                        session.setApp(app);
-                        session.sessionMgr = SwarmSessionManager.this;
-                        Session local = getSession(session.getSessionId());
-                        if (local == null) {
-                            registerSession(session);
-                        } else {
-                            mergeSession(local, session);
-                        }
-                    } catch (Exception x) {
-                        log.warn("SwarmSession: Skipping session from received state: " + entry.getKey(), x);
-                    }
-                }
-                if (debug) {
-                    log.debug("Received session map: " + map.keySet());
-                }
-            } catch (Exception x) {
-                log.error ("Error in setState()", x);
+        boolean startupAttempt = initialStateAttemptActive;
+        boolean complete = startupAttempt
+                ? applyInitialSessionState(bytes)
+                : applyLegacySessionState(bytes);
+        if (startupAttempt) {
+            synchronized (initialStateMonitor) {
+                initialStateApplied = complete;
+                initialStateCompleted = true;
+                initialStateMonitor.notifyAll();
             }
+        }
+    }
+
+    private boolean applyInitialSessionState(byte[] bytes) {
+        if (bytes == null) {
+            return false;
+        }
+        try {
+            Hashtable map = (Hashtable) bytesToObject(bytes);
+            List decodedSessions = new ArrayList(map.size());
+            Iterator it = map.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry entry = (Map.Entry) it.next();
+                try {
+                    decodedSessions.add(decodeSession(entry.getValue()));
+                } catch (Exception x) {
+                    log.warn("SwarmSession: Skipping session from received state: "
+                            + entry.getKey(), x);
+                    return false;
+                }
+            }
+            Iterator decoded = decodedSessions.iterator();
+            while (decoded.hasNext()) {
+                applySession((SwarmSession) decoded.next());
+            }
+            if (debug) {
+                log.debug("Received session map: " + map.keySet());
+            }
+            return true;
+        } catch (Exception x) {
+            log.error("Error in setState()", x);
+            return false;
+        }
+    }
+
+    private boolean applyLegacySessionState(byte[] bytes) {
+        if (bytes == null) {
+            return false;
+        }
+        try {
+            Hashtable map = (Hashtable) bytesToObject(bytes);
+            Iterator it = map.entrySet().iterator();
+            while (it.hasNext()) {
+                Map.Entry entry = (Map.Entry) it.next();
+                try {
+                    applySession(decodeSession(entry.getValue()));
+                } catch (Exception x) {
+                    log.warn("SwarmSession: Skipping session from received state: "
+                            + entry.getKey(), x);
+                }
+            }
+            if (debug) {
+                log.debug("Received session map: " + map.keySet());
+            }
+            return true;
+        } catch (Exception x) {
+            log.error("Error in setState()", x);
+            return false;
+        }
+    }
+
+    private SwarmSession decodeSession(Object value) throws Exception {
+        SwarmSession session = value instanceof byte[]
+                ? (SwarmSession) bytesToObject((byte[]) value)
+                : (SwarmSession) value;
+        if (session == null || session.getSessionId() == null) {
+            throw new IOException("invalid session state entry");
+        }
+        session.setApp(app);
+        session.sessionMgr = SwarmSessionManager.this;
+        return session;
+    }
+
+    private void applySession(SwarmSession session) {
+        Session local = getSession(session.getSessionId());
+        if (local == null) {
+            registerSession(session);
+        } else {
+            mergeSession(local, session);
         }
     }
 
