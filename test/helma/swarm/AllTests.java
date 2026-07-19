@@ -70,7 +70,7 @@ public final class AllTests {
             } catch (Throwable failure) {
                 String message = failure.getClass().getSimpleName() + ": " + safeMessage(failure);
                 failures.add(test.name + "\t" + message);
-                System.out.println("FAIL [" + label(test) + "] " + test.name + " — " + message);
+                System.out.println("FAIL [" + label(test) + "] " + test.name + " - " + message);
             }
         }
 
